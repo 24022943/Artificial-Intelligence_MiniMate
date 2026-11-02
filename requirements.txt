@@ -1,0 +1,41 @@
+# ==============================================================================
+# MINIMATE (Nhóm 10 - INT3401 12) - Python Dependencies
+# Cài đặt: pip install -r requirements.txt
+# ==============================================================================
+
+# --- 1. AI / Machine Learning & Xử lý dữ liệu tiếng Việt (Ngọc Anh) ---
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+scipy>=1.10.0
+joblib>=1.3.0
+underthesea>=6.8.0
+pyvi>=0.1.1
+
+# --- 2. Trực quan hóa & Đánh giá mô hình (Confusion Matrix, Báo cáo ML) ---
+matplotlib>=3.7.0
+seaborn>=0.12.2
+
+# --- 3. Backend, API & Quản lý tác vụ / Hội thoại (Hiệp) ---
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.4.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# --- 4. Speech-to-Text (STT) & Text-to-Speech (TTS) ---
+SpeechRecognition>=3.10.0
+gTTS>=2.4.0
+edge-tts>=6.1.9
+pydub>=0.25.1
+sounddevice>=0.4.6
+soundfile>=0.12.1
+
+# --- 5. Giao tiếp thiết bị nhúng ESP32-S3 (Hiệp & Đạt) ---
+pyserial>=3.5
+websockets>=12.0
+
+# --- 6. Kiểm thử & Công cụ phát triển (Testing & Logging) ---
+pytest>=7.4.0
+tqdm>=4.66.0
+colorama>=0.4.6
