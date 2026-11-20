@@ -1,65 +1,132 @@
-# MINIMATE — baseline terminal tuần 9
+# MINIMATE — quản lý phiên học và lời nhắc trên PC
 
-Chương trình Python dùng luật/từ khóa tiếng Việt, SQLite cục bộ và ESP32 giả lập. Không dùng LLM, machine learning hoặc phần cứng thật. Cần Python 3.10 trở lên; chỉ dùng thư viện chuẩn, không cần `pip install`.
+Bản bàn giao hiện thực quản lý phiên học, lịch nhắc việc, FAQ học tập và luồng
+điều phối 7 intent trên máy tính. Mặc định dùng BamiBERT local đã tinh chỉnh;
+keyword/rule vẫn có để so sánh bằng `--classifier keyword` và không cần thư viện ngoài.
 
-## Chạy
+Khi chạy CLI, dữ liệu thử nghiệm được lưu cục bộ tại `data/minimate.db` bằng
+SQLite: các bảng phiên học hiện tại, lịch sử lệnh và lời nhắc.
 
-Từ thư mục project:
+## Model local và cài đặt Windows
 
-```text
+Model được chọn: `models/hf_schedule_from_hf_v2`, tinh chỉnh tiếp từ
+`nguen2929/minimate_intent_classifier`. Trọng số `model.safetensors` là
+411.850.308 byte (khoảng 412 MB); toàn thư mục khoảng 413 MB, gồm tokenizer/config.
+Không tải model khi chạy; thiếu file hoặc thư viện thì báo lỗi, không tự đổi sang baseline.
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install torch transformers==4.57.1
+.venv\Scripts\Activate.ps1
 python src/main.py
+python src/main.py --classifier keyword
+python src/main.py --db :memory: --text "Bắt đầu học 25 phút"
 ```
 
-Nhập mỗi yêu cầu trên một dòng. Nhập `/quit`, gửi EOF hoặc Ctrl+C để thoát. Dữ liệu mặc định ở `data/minimate.db`, được giữ khi mở lại chương trình và bị loại khỏi Git. Có thể chọn tệp khác bằng `python src/main.py --db data/demo.db`.
+Trên máy hiện tại, `.venv_hf_test` cũng đã có thư viện tương thích; có thể chạy
+`.venv_hf_test\Scripts\python.exe -X utf8 src/main.py --db :memory:`.
+Launcher ưu tiên `.venv`, rồi `.venv_hf_test`, cuối cùng Python trong PATH;
+chuyển tiếp tham số, ví dụ `run_minimate.bat --classifier keyword`.
 
-## Ví dụ câu nhập
+Classifier nạp tokenizer/model một lần lúc khởi động, đọc `id2label` từ config,
+giữ dấu văn bản, dùng `truncation=True, max_length=32` giống `scripts/test_hf_intent.py`.
+Điểm softmax không bảo đảm dự đoán đúng. Câu dài bị cắt, câu phủ định, nhiều ý
+hoặc cách diễn đạt ngoài dữ liệu huấn luyện vẫn có thể nhận sai. Task Manager
+kiểm tra hành động trước khi cập nhật phiên; intent có điểm cao không đủ để bắt đầu/hủy.
+
+## Phạm vi lịch nhắc
+
+Đã hỗ trợ tạo và liệt kê lời nhắc sắp tới. Câu “Tôi có lịch gì vào ngày mai?”
+đi đến tra cứu và lọc riêng ngày mai. Không có ngày thì liệt kê các lời nhắc sắp tới.
+Model nhận xóa vào `schedule_reminder`; backend tìm lời nhắc theo nội dung (không
+phân biệt dấu/hoa thường), ngày và giờ nếu có. Một kết quả thì hỏi xác nhận;
+nhiều kết quả thì hiển thị danh sách đánh số, yêu cầu chọn một số rồi hỏi xác nhận;
+không có kết quả thì thông báo không tìm thấy. Không xóa hàng loạt.
 
 ```text
-Xin chào
-Bắt đầu học 25 phút
-Còn bao lâu?
-Trạng thái phiên học?
-Nhắc lại
-Dừng học
-Bắt đầu học
-25 phút
-Hủy phiên học
-Nhắc tôi đi thi sau 2 ngày lúc 8 giờ
-Xem lịch đã lưu
-Tại sao trời xanh?
-Ngày mai 8 giờ
-/quit
+Xóa lời nhắc đi học ngày mai
+2
+đúng
 ```
 
-Mỗi yêu cầu có JSON response gồm `intent`, `confidence`, `action`, `text`, `device_state`, `session_state`. Điểm confidence là điểm quy ước của luật, không phải xác suất mô hình. Các dòng `ESP32 <- {...}` mô phỏng lệnh gửi đến ESP32. Backend chỉ gửi `set_state` và `speak`, không điều khiển màn hình hoặc loa. `speak` chỉ in lệnh, không phát âm thanh. Adapter có hàm `receive` để thử sự kiện JSON giả lập trong unit test; terminal nhập text trực tiếp, không giả vờ đã nhận audio thật.
+`2` là số thứ tự trong danh sách vừa hiển thị, không phải ID SQLite.
+`đúng`, `đúng rồi`, `đồng ý`, `ừ`, `ok` xác nhận khi có yêu cầu đang chờ.
+`không`, `thôi`, `bỏ qua`, `hủy` bỏ thao tác xóa. Việc chọn số chưa xóa dữ liệu.
+Xóa thành công loại bỏ đúng bản ghi SQLite đã chọn; không có chức năng hoàn tác.
+Nếu bản ghi đã thay đổi từ lúc hỏi xác nhận, chương trình không xóa và yêu cầu tìm lại.
+Ngữ cảnh chờ chỉ tồn tại trong lần chạy hiện tại; xác nhận lặp không xóa thêm bản ghi.
+Chưa hỗ trợ sửa, lịch lặp hoặc thông báo đến hạn. “Vừa tạo” chưa được giải nghĩa
+thành bản ghi gần nhất; nên nêu nội dung/ngày cụ thể.
+FAQ hiện có vẫn được dùng cho `open_question`.
 
-## Cấu trúc
+## Kiểm thử tích hợp
 
-| Tệp | Trách nhiệm |
-|---|---|
-| `src/main.py` | Vòng lặp terminal, nhận text, kiểm tra hết giờ trong lúc chờ nhập, in JSON và gửi lệnh mô phỏng. |
-| `src/minimate/intent_baseline.py` | Chuẩn hóa Unicode/chữ thường/khoảng trắng, nhận diện đúng 7 nhóm intent theo tài liệu. |
-| `src/minimate/task_manager.py` | Điều phối, xử lý lời nhắc, tạo phản hồi bằng mẫu câu; phần Response Generator được giữ dưới dạng tạo response trong module này. |
-| `src/minimate/session_manager.py` | Quản lý bắt đầu và hết giờ, tính thời gian còn lại. |
-| `src/minimate/storage.py` | SQLite: phiên hiện tại, lịch sử lệnh, lời nhắc; thay đổi phiên/lời nhắc và ghi lệnh trong cùng giao dịch. |
-| `src/minimate/esp32_client.py` | Mô phỏng giao tiếp JSON; không có driver phần cứng. |
-| `tests/test_baseline.py` | Kiểm thử baseline, nghiệp vụ, lưu trữ và giao tiếp giả lập. |
-| `docs/architecture.md` | Bản sao nguyên nội dung kiến trúc gốc ở root. |
-
-## Quy ước và giới hạn baseline
-
-- Một phiên học tại một thời điểm. Thời lượng là số nguyên dương kèm `phút` hoặc `giờ`, tối đa 24 giờ; đây là giới hạn kiểm tra đầu vào của bản chạy thử. Thiếu/sai thời lượng thì chờ nhập bổ sung, không tự đặt mặc định.
-- Khi hết giờ, phiên trở về `idle`; không tự hủy khi đóng terminal. Khi mở lại, kiểm tra thời điểm kết thúc đã lưu.
-- Lời nhắc hỗ trợ mẫu `Nhắc tôi <nội dung> sau <N> ngày lúc <H> giờ [<M> phút]`, dùng giờ địa phương của máy tính, yêu cầu thời điểm tương lai. Thiếu thông tin thì nhập lại đầy đủ câu. Chỉ lưu và liệt kê; chưa có chức năng tự phát thông báo đến hạn.
-- `repeat_response` nhắc lại chữ từ SQLite, không chạy lại hành động. Câu hỏi mở trả thông báo module hội thoại sẽ tích hợp sau.
-- `out_of_scope` xử lý câu chưa hiểu hoặc ngoài phạm vi. Baseline chỉ hỗ trợ các mẫu nêu trên, không hiểu toàn bộ tiếng Việt hoặc mọi kiểu câu phủ định/phức hợp.
-- `speaking` là mô phỏng xuất phản hồi. Chưa có STT, TTS, micro, ESP32 thật, OLED/TFT hay loa thật.
-- Tài liệu kiến trúc hiện tại đã khớp yêu cầu 7 intent và lời nhắc. Giữ nguyên cả bản gốc và bản trong `docs`; tài liệu có lỗi chữ “hai bảng” nhưng liệt kê ba bảng, chương trình triển khai đủ cả ba. Intent `open_question` có trạng thái xử lý `processing`, rồi `speaking` khi xuất phản hồi mẫu.
-
-## Kiểm thử
+Bộ tách `src/minimate/reminder_parser.py` xử lý hành động, nội dung và thời điểm
+sau bước dự đoán. Mẫu tạo rõ ràng như “Nhắc tôi …” được ưu tiên khi điều phối
+nếu model nhận nhầm nhóm; confidence vẫn là điểm model, không phải độ chắc chắn của luật.
+Phần xử lý chạy
+sau model 7 intent, không thay trọng số model. Hỗ trợ ngày mai/sáng mai/chiều mai,
+hôm nay/sau N ngày; giờ dạng số như 9 giờ, 9:30, 9 giờ sáng, 3 giờ chiều.
+Nội dung giữ dấu tiếng Việt; hỗ trợ thời gian trước hoặc sau nội dung:
 
 ```text
+Nhắc tôi 9 giờ sáng ngày mai làm bài kiểm tra
+Nhắc tôi sáng mai 9 giờ đi học
+Nhắc tôi đi học
+Sáng mai lúc 9 giờ
+```
+
+Câu thiếu dữ liệu được hỏi đúng phần thiếu, ngữ cảnh chỉ giữ trong lần chạy hiện tại.
+Yêu cầu “nhắc tôi” cũng được nhận ở giữa/cuối câu, ví dụ “Ngày mai tôi phải đi học,
+nhắc tôi vào lúc 2 giờ chiều” lưu nội dung “đi học”, giờ 14:00.
+Nhập `hủy`/`bỏ qua` để bỏ yêu cầu đang chờ, không xóa dữ liệu đã lưu.
+Câu đủ dữ liệu nhưng không có yêu cầu tạo rõ ràng, ví dụ “9 giờ sáng ngày mai đi học”,
+sẽ hỏi xác nhận nếu model phân loại vào lịch nhắc; trả lời `đồng ý` hoặc `không`.
+Giờ sai, thời điểm quá khứ hoặc nhiều thời điểm cần nhập lại. Lịch lặp vẫn chưa hỗ trợ.
+Bộ luật không bao phủ mọi câu tự nhiên, ngày viết số/chữ hoặc thời gian mơ hồ như “lát nữa”.
+
+`python -m unittest discover -s tests -v` dùng SQLite trong bộ nhớ/tệp tạm.
+Test classifier dùng giả lập thư viện để kiểm tra nạp một lần, nhãn config,
+đầu vào rỗng, lỗi thiếu thư viện/file và cách CLI chọn model mặc định.
+Đã thử thêm model local thật trong `.venv_hf_test` với `--db :memory:`:
+bắt đầu thiếu thời lượng → 25 phút, thời gian còn lại, tra cứu lịch, yêu cầu xóa,
+yêu cầu bật điều hòa. Không dùng SQLite thật để kiểm thử.
+
+## Bảy intent
+
+1. `greeting` — chào hỏi
+2. `focus_session_control` — bắt đầu hoặc hủy phiên học
+3. `check_focus_session` — hỏi thời gian còn lại hoặc trạng thái phiên
+4. `schedule_reminder` — tạo lời nhắc hoặc tra cứu lịch đã lưu
+5. `repeat_response` — yêu cầu nhắc lại phản hồi
+6. `open_question` — câu hỏi kiến thức/yêu cầu giải thích
+7. `out_of_scope` — yêu cầu ngoài phạm vi hoặc chưa đủ rõ để xử lý
+
+## Chạy thử
+
+```powershell
+python src/main.py --text "bắt đầu học 25 phút"
+python src/main.py
 python -m unittest discover -s tests -v
 ```
 
-Tests dùng SQLite trong bộ nhớ hoặc thư mục tạm và đồng hồ cố định, không sửa dữ liệu chạy thật. Bao gồm đủ 7 intent, bắt đầu/hủy, chờ thời lượng, thời gian còn lại/hết giờ, nhắc lại không khởi động lại, lời nhắc hợp lệ/sai, lưu và mở lại SQLite, hoàn tác khi ghi thất bại và JSON ESP32.
+Trên Windows, có thể nhấp đúp [`run_minimate.bat`](run_minimate.bat) để mở
+chương trình terminal. Máy cần có Python trong `PATH`.
+
+## Câu thử nhanh
+
+```text
+Bắt đầu học 25 phút
+Còn bao lâu?
+Nhắc tôi nộp bài ngày mai lúc 8 giờ
+Xem lịch đã lưu
+Pomodoro là gì?
+Nhắc lại
+Ngày mai 8 giờ
+```
+
+Mỗi lần nhập, terminal hiển thị câu trả lời dễ đọc và JSON response gồm
+`intent`, `confidence`, `action`, `text`, `device_state`, `session_state`.
+
+Xem kiến trúc, giao thức dữ liệu và tiêu chuẩn bàn giao tại
+[`docs/architecture.md`](docs/architecture.md).

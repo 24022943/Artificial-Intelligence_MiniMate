@@ -1,115 +1,124 @@
-import contextlib
-from datetime import datetime, timedelta, timezone
-import io
-import json
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
-import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from minimate.intent_baseline import classify
-from minimate.storage import Storage
-from minimate.task_manager import TaskManager
-from minimate.esp32_client import ESP32Client
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from minimate.intent_baseline import KeywordIntentClassifier
+from minimate.task_manager import DeviceState, SessionState, TaskManager
+from minimate.storage import SQLiteStore
 
 
-class BaselineTests(unittest.TestCase):
-    def setUp(self):
-        self.storage = Storage(':memory:')
-        self.now = datetime(2026, 11, 8, 10, tzinfo=timezone(timedelta(hours=7)))
-        self.manager = TaskManager(self.storage, lambda: self.now)
-
-    def tearDown(self):
-        self.storage.close()
-
-    def test_seven_intents(self):
-        cases = {'  XIN CHÀO  ': 'greeting', 'Bắt đầu học 25 phút': 'focus_session_control',
-                 'Còn bao lâu?': 'check_focus_session', 'Nhắc tôi đi thi sau 2 ngày lúc 8 giờ': 'schedule_reminder',
-                 'Nhắc lại': 'repeat_response', 'Tại sao trời xanh?': 'open_question', 'Ngày mai 8 giờ': 'out_of_scope'}
-        for text, expected in cases.items():
+class IntentBaselineTests(unittest.TestCase):
+    def test_question_words_and_unsupported_commands(self) -> None:
+        classifier = KeywordIntentClassifier()
+        samples = {
+            "Tại sao học lâu lại mệt?": "open_question",
+            "Phiên học còn bao lâu?": "check_focus_session",
+            "Ngày mai mình có lịch gì?": "schedule_reminder",
+            "Bạn vừa nói gì vậy?": "repeat_response",
+            "Xóa lời nhắc nộp bài": "out_of_scope",
+            "Thêm 10 phút vào phiên học": "out_of_scope",
+            "Mở camera giúp mình": "out_of_scope",
+        }
+        for text, intent in samples.items():
             with self.subTest(text=text):
-                self.assertEqual(classify(text).intent, expected)
+                self.assertEqual(classifier.classify(text).name, intent)
 
-    def test_start_remaining_cancel(self):
-        self.assertEqual(self.manager.process('Bắt đầu học 25 phút')['session_state'], 'active')
-        self.now += timedelta(minutes=5)
-        result = self.manager.process('Còn bao lâu?')
-        self.assertIn('20 phút 0 giây', result['text'])
-        self.assertEqual(result['action'], 'report_remaining_time')
-        self.assertEqual(self.manager.process('Trạng thái phiên học?')['session_state'], 'active')
-        self.assertEqual(self.manager.process('Dừng học')['session_state'], 'cancelled')
-        self.assertIn('Không có', self.manager.process('Còn bao lâu?')['text'])
-
-    def test_missing_duration_and_expiry(self):
-        self.assertEqual(self.manager.process('Bắt đầu học')['session_state'], 'awaiting_duration')
-        self.assertEqual(self.manager.process('0 phút')['device_state'], 'clarification')
-        self.assertEqual(self.manager.process('25')['device_state'], 'clarification')
-        self.assertEqual(self.manager.process('1 phút')['session_state'], 'active')
-        self.now += timedelta(minutes=1)
-        self.assertTrue(self.manager.tick())
-        self.assertFalse(self.manager.tick())
-        self.assertEqual(self.storage.session()['state'], 'idle')
-
-    def test_repeat_does_not_restart_and_duplicate_start(self):
-        first = self.manager.process('Bắt đầu học 25 phút')
-        end = self.storage.session()['ends_at']
-        self.now += timedelta(minutes=2)
-        self.assertEqual(self.manager.process('Nhắc lại')['text'], first['text'])
-        self.manager.process('Bắt đầu học 10 phút')
-        self.assertEqual(self.storage.session()['ends_at'], end)
-
-    def test_reminder_and_listing(self):
-        self.manager.process('Nhắc tôi đi thi sau 2 ngày lúc 8 giờ')
-        row = self.storage.reminders()[0]
-        self.assertEqual(row['content'], 'đi thi')
-        self.assertEqual(row['due_at'], '2026-11-10T08:00:00+07:00')
-        self.assertIn('đi thi', self.manager.process('Xem lịch đã lưu')['text'])
-
-    def test_invalid_reminder_and_negation(self):
-        for text in ('Nhắc tôi đi thi', 'Nhắc tôi đi thi sau 2 ngày lúc 25 giờ', 'Nhắc tôi đi thi sau 0 ngày lúc 8 giờ'):
-            self.assertEqual(self.manager.process(text)['device_state'], 'clarification')
-        self.assertEqual(self.storage.reminders(), [])
-        for text in ('Đừng bắt đầu học 25 phút', 'Bắt đầu học rồi dừng học', ''):
-            self.assertEqual(self.manager.process(text)['intent'], 'out_of_scope')
-        self.assertEqual(self.storage.session()['state'], 'idle')
-
-    def test_persistence(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'test.db'
-            store = Storage(path)
-            manager = TaskManager(store, lambda: self.now)
-            manager.process('Bắt đầu học 25 phút')
-            response = manager.process('Nhắc tôi đi thi sau 2 ngày lúc 8 giờ')
-            store.close()
-            reopened = Storage(path)
-            try:
-                self.assertEqual(reopened.session()['state'], 'active')
-                self.assertEqual(len(reopened.reminders()), 1)
-                self.assertEqual(reopened.last_response(), response['text'])
-                self.assertEqual(reopened.connection.execute('SELECT count(*) FROM commands').fetchone()[0], 2)
-            finally:
-                reopened.close()
-
-    def test_transaction_rollback(self):
-        self.storage.connection.execute("CREATE TRIGGER reject_command BEFORE INSERT ON commands BEGIN SELECT RAISE(ABORT, 'test'); END")
-        import sqlite3
-        with self.assertRaises(sqlite3.IntegrityError):
-            self.manager.process('Bắt đầu học 25 phút')
-        self.assertEqual(self.storage.session()['state'], 'idle')
-
-    def test_device_json(self):
-        output = io.StringIO()
-        device = ESP32Client()
-        with contextlib.redirect_stdout(output):
-            device.receive('{"type":"button_pressed","request_id":"r-001"}')
-            device.set_state('listening', 'r-001')
-            device.respond(self.manager.process('Xin chào'), 'r-001')
-        messages = [json.loads(line.split(' ', 2)[2]) for line in output.getvalue().splitlines()]
-        self.assertEqual(messages[1]['state'], 'listening')
-        self.assertEqual(messages[2]['state'], 'speaking')
-        self.assertEqual(messages[3]['type'], 'speak')
+    def test_recognizes_all_seven_intents(self) -> None:
+        samples = {
+            "xin chào minimate": "greeting",
+            "bắt đầu học 25 phút": "focus_session_control",
+            "còn bao lâu": "check_focus_session",
+            "nhắc tôi đi thi sau 2 ngày lúc 8 giờ": "schedule_reminder",
+            "nhắc lại": "repeat_response",
+            "giải thích thuật toán này": "open_question",
+            "ngày mai 8 giờ": "out_of_scope",
+        }
+        classifier = KeywordIntentClassifier()
+        for text, intent in samples.items():
+            self.assertEqual(classifier.classify(text).name, intent)
 
 
-if __name__ == '__main__':
+class TaskManagerTests(unittest.TestCase):
+    def test_start_needs_duration_then_starts(self) -> None:
+        manager = TaskManager()
+        now = datetime(2026, 11, 6, 9, 0)
+        clarification = manager.handle("bắt đầu học", now)
+        self.assertEqual(clarification.device_state, DeviceState.CLARIFICATION)
+        started = manager.handle("25 phút", now)
+        self.assertEqual(started.action, "start_session")
+        self.assertEqual(manager.session.state, SessionState.ACTIVE)
+
+    def test_remaining_time(self) -> None:
+        manager = TaskManager()
+        now = datetime(2026, 11, 6, 9, 0)
+        manager.handle("bắt đầu học 25 phút", now)
+        response = manager.handle("còn bao lâu", now + timedelta(minutes=5))
+        self.assertIn("20 phút", response.text)
+
+    def test_persists_session_and_command_history(self) -> None:
+        store = SQLiteStore()
+        now = datetime(2026, 11, 6, 9, 0)
+        manager = TaskManager(store=store)
+        manager.handle("bắt đầu học 25 phút", now)
+        restored_manager = TaskManager(store=store)
+        self.assertEqual(restored_manager.session.state, SessionState.ACTIVE)
+        self.assertEqual(restored_manager.session.duration_minutes, 25)
+        self.assertEqual(store.command_count(), 1)
+
+    def test_creates_reminder_from_relative_time(self) -> None:
+        store = SQLiteStore()
+        manager = TaskManager(store=store)
+        now = datetime(2026, 11, 7, 9, 0)
+        response = manager.handle("nhắc tôi đi thi sau 2 ngày lúc 8 giờ", now)
+        self.assertEqual(response.intent, "schedule_reminder")
+        self.assertEqual(response.action, "create_reminder")
+        self.assertEqual(store.upcoming_reminders(now)[0]["content"], "đi thi")
+
+    def test_cancel_session(self) -> None:
+        manager = TaskManager()
+        now = datetime(2026, 11, 7, 9, 0)
+        manager.handle("bắt đầu học 25 phút", now)
+        response = manager.handle("dừng học", now)
+        self.assertEqual(response.action, "cancel_session")
+        self.assertEqual(manager.session.state, SessionState.CANCELLED)
+
+    def test_lists_only_upcoming_reminders(self) -> None:
+        store = SQLiteStore()
+        manager = TaskManager(store=store)
+        now = datetime(2026, 11, 7, 9, 0)
+        store.add_reminder("viec da qua", now - timedelta(days=1), now - timedelta(days=2))
+        manager.handle("nhắc tôi nộp bài ngày mai lúc 8 giờ", now)
+        response = manager.handle("xem lịch đã lưu", now)
+        self.assertEqual(response.action, "list_reminders")
+        self.assertIn("nộp bài", response.text)
+        self.assertNotIn("viec da qua", response.text)
+
+    def test_repeat_response_persists_in_store(self) -> None:
+        store = SQLiteStore()
+        now = datetime(2026, 11, 7, 9, 0)
+        TaskManager(store=store).handle("xin chào", now)
+        response = TaskManager(store=store).handle("nhắc lại", now)
+        self.assertEqual(response.action, "repeat_response")
+        self.assertIn("Chào bạn", response.text)
+
+    def test_faq_and_unknown_open_question(self) -> None:
+        manager = TaskManager()
+        faq = manager.handle("Pomodoro là gì?", datetime(2026, 11, 7, 9, 0))
+        self.assertEqual(faq.action, "answer_faq")
+        self.assertIn("25 phút", faq.text)
+        unknown = manager.handle("giải thích blockchain", datetime(2026, 11, 7, 9, 0))
+        self.assertEqual(unknown.action, "faq_not_found")
+
+    def test_out_of_scope_and_empty_input(self) -> None:
+        manager = TaskManager()
+        for text in ("", "ngày mai 8 giờ"):
+            response = manager.handle(text, datetime(2026, 11, 7, 9, 0))
+            self.assertEqual(response.intent, "out_of_scope")
+            self.assertEqual(response.action, "request_clarification")
+
+
+if __name__ == "__main__":
     unittest.main()

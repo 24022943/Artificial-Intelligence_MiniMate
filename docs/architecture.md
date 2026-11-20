@@ -28,15 +28,7 @@ ESP32 Adapter
    ↓ Serial hoặc Wi-Fi (JSON)
 ESP32-S3 → OLED / Loa
 ```
-## Sơ đồ tuần tự xử lý yêu cầu
 
-Sơ đồ dưới đây minh họa luồng xử lý khi người dùng bấm nút, nói vào micro
-và MINIMATE phản hồi qua ESP32-S3.
-
-![Sequence diagram MINIMATE](assets/sequence-diagram.png)
-
-**Hình 1.** Luồng tương tác giữa người dùng, ESP32-S3, MINIMATE trên máy tính,
-SQLite, màn hình OLED/TFT và loa.
 
 ## Luồng hoạt động hệ thống
 
@@ -126,3 +118,4 @@ Mọi message là JSON một dòng, có `type` và `request_id`.
 {"type":"speak","request_id":"r-002","text":"Bạn còn 20 phút học."}
 {"type":"error","request_id":"r-003","message":"Không thể dùng microphone."}
 ```
+

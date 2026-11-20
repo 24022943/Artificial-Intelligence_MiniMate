@@ -1,67 +1,62 @@
-"""Run with: python src/main.py"""
+"""Command-line demo for MINIMATE's week-9 baseline."""
+
+from __future__ import annotations
+
 import argparse
 import json
+import sys
 from pathlib import Path
-from queue import Queue, Empty
-import sqlite3
-import threading
-from minimate.storage import Storage
 from minimate.task_manager import TaskManager
-from minimate.esp32_client import ESP32Client
+from minimate.storage import SQLiteStore
+from minimate.intent_baseline import KeywordIntentClassifier
+from minimate.intent_hf import HFIntentClassifier, ClassifierError, DEFAULT_MODEL_DIR
 
 
-def read_input(queue):
-    try:
-        while True:
-            queue.put(input())
-    except EOFError:
-        queue.put(None)
-
-
-def main():
-    parser = argparse.ArgumentParser(description='MINIMATE tuần 9')
+def main() -> None:
+    # PowerShell hosts can still expose a legacy code page on Windows.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if not sys.stdin.isatty() and hasattr(sys.stdin, 'reconfigure'):
+        sys.stdin.reconfigure(encoding='utf-8')
+    parser = argparse.ArgumentParser(description="MINIMATE seven-intent baseline")
+    parser.add_argument("--text", help="Run one Vietnamese input then exit.")
+    parser.add_argument('--classifier', choices=('hf', 'keyword'), default='hf')
+    parser.add_argument('--model-dir', type=Path, default=DEFAULT_MODEL_DIR)
     parser.add_argument('--db', default=str(Path(__file__).resolve().parents[1] / 'data' / 'minimate.db'))
     args = parser.parse_args()
     try:
-        storage = Storage(args.db)
-    except (sqlite3.Error, OSError) as error:
-        print(f'Không mở được SQLite: {error}')
-        return 1
-    manager, device = TaskManager(storage), ESP32Client()
-    queue = Queue()
-    threading.Thread(target=read_input, args=(queue,), daemon=True).start()
-    print('MINIMATE — nhập câu tiếng Việt; /quit để thoát. Chỉ mô phỏng thiết bị.')
-    count = 1
-    request_id = f'r-{count:03d}'
-    device.set_state('listening', request_id)
+        classifier = HFIntentClassifier(args.model_dir) if args.classifier == 'hf' else KeywordIntentClassifier()
+    except ClassifierError as error:
+        parser.exit(1, f'{error}\n')
+    database_path = Path(args.db)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    manager = TaskManager(classifier=classifier, store=SQLiteStore(database_path))
+    if args.text is not None:
+        _print_response(manager.handle(args.text).to_dict())
+        manager.store.close()
+        return
+    print("MINIMATE sẵn sàng. Gõ 'exit', 'quit' hoặc 'thoát' để dừng.")
+    while True:
+        try:
+            text = input("Bạn: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nĐã kết thúc MINIMATE.")
+            break
+        if text.lower() in {"thoát", "thoat", "exit", "quit"}:
+            break
+        _print_response(manager.handle(text).to_dict())
+    manager.store.close()
+
+
+def _print_response(response: dict[str, object]) -> None:
+    """Show a human-readable answer followed by the required JSON contract."""
+    print(f"MINIMATE: {response['text']}")
+    print(json.dumps(response, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
     try:
-        while True:
-            try:
-                if manager.tick():
-                    print('Phiên học đã hoàn thành.')
-                    device.send({'type': 'speak', 'request_id': 'timer', 'text': 'Phiên học đã hoàn thành.'})
-                try:
-                    line = queue.get(timeout=0.25)
-                except Empty:
-                    continue
-                if line is None or line.strip() == '/quit':
-                    break
-                device.set_state('processing', request_id)
-                response = manager.process(line)
-                print(json.dumps(response, ensure_ascii=False))
-                device.respond(response, request_id)
-                count += 1
-                request_id = f'r-{count:03d}'
-                device.set_state('listening', request_id)
-            except sqlite3.Error as error:
-                device.send({'type': 'error', 'request_id': request_id, 'message': f'Lỗi SQLite: {error}'})
-                return 1
-    except KeyboardInterrupt:
-        print('\nĐã thoát MINIMATE.')
-    finally:
-        storage.close()
-    return 0
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())
+        main()
+    except ClassifierError as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

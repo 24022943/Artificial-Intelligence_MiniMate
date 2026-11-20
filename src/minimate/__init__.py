@@ -1,1 +1,1 @@
-"""MINIMATE terminal baseline."""
+"""Core orchestration baseline for the MINIMATE project."""

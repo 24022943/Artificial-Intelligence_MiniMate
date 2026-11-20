@@ -1,54 +1,75 @@
-"""Vietnamese keyword baseline; no external models."""
+"""A transparent Vietnamese keyword baseline for MINIMATE's seven intents."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
 import re
 import unicodedata
-from dataclasses import dataclass
-
-
-def normalize(text):
-    return " ".join(unicodedata.normalize("NFC", text).lower().split())
-
-
-def duration_seconds(text):
-    match = re.fullmatch(r"\s*(\d+)\s*(phút|giờ)\s*[.!]?", text)
-    if not match:
-        return None
-    value = int(match[1]) * (60 if match[2] == "phút" else 3600)
-    return value if 0 < value <= 86400 else None
 
 
 @dataclass(frozen=True)
-class Prediction:
-    intent: str
-    action: str
-    confidence: float = 0.9
+class IntentResult:
+    name: str
+    confidence: float
+    matched_keywords: tuple[str, ...]
 
 
-def classify(text):
-    text = normalize(text)
-    unknown = Prediction("out_of_scope", "request_clarification", 0.2)
-    if not text or re.search(r"\b(đừng|không muốn|không được)\b", text):
-        return unknown
-    start = bool(re.search(r"\b(bắt đầu (?:phiên )?học|học trong)\b", text))
-    cancel = bool(re.search(r"\b(dừng học|hủy (?:phiên(?: học)?)?|huỷ phiên học)\b", text))
-    if start and cancel:
-        return unknown
-    # Reminder content can contain study-related words: handle its prefix first.
-    if re.match(r"^(nhắc tôi|nhắc mình)\b", text):
-        return Prediction("schedule_reminder", "create_reminder")
-    if re.search(r"\b(xem lịch|lịch đã lưu|danh sách lời nhắc)\b", text):
-        return Prediction("schedule_reminder", "list_reminders")
-    if re.search(r"\b(nhắc lại|nói lại|lặp lại)\b", text):
-        return Prediction("repeat_response", "repeat_response")
-    if cancel:
-        return Prediction("focus_session_control", "cancel_session")
-    if start:
-        return Prediction("focus_session_control", "start_session")
-    if re.search(r"\b(còn bao lâu|còn bao nhiêu|thời gian còn lại)\b", text):
-        return Prediction("check_focus_session", "report_remaining_time")
-    if re.search(r"\b(trạng thái phiên|phiên học đang|đang học không)\b", text):
-        return Prediction("check_focus_session", "report_status")
-    if re.search(r"\b(xin chào|chào(?: bạn| minimate)?)\b", text):
-        return Prediction("greeting", "greet")
-    if re.search(r"\b(là gì|tại sao|vì sao|như thế nào|làm sao|thế nào|giải thích)\b", text):
-        return Prediction("open_question", "conversation_placeholder", 0.8)
-    return unknown
+def normalize(text: str) -> str:
+    """Lowercase and remove Vietnamese accents so rules handle ordinary typing."""
+    text = text.lower().replace("đ", "d")
+    text = "".join(
+        char for char in unicodedata.normalize("NFD", text) if unicodedata.category(char) != "Mn"
+    )
+    return re.sub(r"\s+", " ", text).strip()
+
+
+INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "greeting": ("xin chao", "chao", "hello", "hi minimate"),
+    "focus_session_control": (
+        "bat dau hoc", "bat dau phien hoc", "hoc trong", "bat dau pomodoro",
+        "huy phien", "dung hoc", "ket thuc phien", "huy hoc",
+    ),
+    "check_focus_session": (
+        "con bao lau", "con may phut", "thoi gian con lai",
+        "trang thai phien", "dang hoc", "phien hoc the nao", "phien hoc con",
+    ),
+    "schedule_reminder": (
+        "nhac toi", "dat loi nhac", "tao loi nhac", "lich da luu",
+        "xem lich", "tra cuu lich", "co lich gi", "nhac minh", "nhac to",
+    ),
+    "repeat_response": ("nhac lai", "lap lai", "noi lai", "vua noi gi"),
+    "open_question": (
+        "giai thich", "giai nghia", "tai sao", "vi sao", "sao lai", "lam sao",
+        "lam the nao", "cach nao", "la gi", "nghia la gi", "y la gi",
+        "cho vi du", "vi du ve", "khac nhau the nao", "khac gi", "co nen",
+        "nhu the nao", "ra sao", "dung de lam gi", "hoat dong the nao", "cho toi hoi",
+        "pomodoro", "tap trung", "nghi giai lao", "giai lao", "lap ke hoach",
+        "ke hoach hoc", "tri hoan", "luoi hoc", "khong muon hoc",
+    ),
+}
+
+
+class KeywordIntentClassifier:
+    """Classify text with longest-keyword matching and an out-of-scope fallback."""
+
+    def classify(self, text: str) -> IntentResult:
+        normalized = normalize(text)
+        # These actions are outside the current supported feature set.
+        unsupported = re.search(
+            r"\b(?:xoa|huy|bo|sua|doi|doi gio|doi ngay)\b.{0,40}\b(?:loi nhac|lich nhac|reminder)\b"
+            r"|\b(?:tam dung|tiep tuc|keo dai)\b.{0,30}\b(?:phien|dong ho|bo dem)\b"
+            r"|\b(?:them|cong)\b.{0,30}\bphut\b.{0,30}\b(?:phien|dong ho|bo dem)\b"
+            r"|\b(?:mo|bat)\s+camera\b",
+            normalized,
+        )
+        if unsupported:
+            return IntentResult("out_of_scope", 0.8, (unsupported.group(),))
+        candidates: list[tuple[int, str, tuple[str, ...]]] = []
+        for intent, keywords in INTENT_KEYWORDS.items():
+            matches = tuple(keyword for keyword in keywords if keyword in normalized)
+            if matches:
+                candidates.append((max(len(keyword) for keyword in matches), intent, matches))
+        if not candidates:
+            return IntentResult("out_of_scope", 0.0, ())
+        score, intent, matches = max(candidates, key=lambda item: item[0])
+        return IntentResult(intent, round(min(0.95, 0.45 + score / 40), 2), matches)

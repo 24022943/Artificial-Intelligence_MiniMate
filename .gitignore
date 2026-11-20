@@ -1,4 +1,13 @@
 __pycache__/
+*.pyc
+data/*.db
+__pycache__/
 *.py[cod]
-data/
 .venv/
+.venv_hf_test/
+data/*.db
+data/*.db-*
+models/
+*.ipynb
+.ipynb_checkpoints/
+word_review_render/
